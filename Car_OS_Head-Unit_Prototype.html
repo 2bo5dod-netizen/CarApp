@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Car OS Telemetry & Diagnostics Head-Unit</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Leaflet Maps CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800;900&family=Inter:wght@400;600;700;900&display=swap');
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #030712;
+      color: #f3f4f6;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+      overflow: hidden;
+    }
+
+    .font-mono-stat {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Pulse Glow Animation for Critical States */
+    @keyframes pulse-red-glow {
+      0%, 100% { box-shadow: 0 0 25px rgba(239, 68, 68, 0.7) inset, 0 0 35px rgba(239, 68, 68, 0.5); }
+      50% { box-shadow: 0 0 10px rgba(239, 68, 68, 0.3) inset, 0 0 15px rgba(239, 68, 68, 0.2); }
+    }
+    .overspeed-active {
+      animation: pulse-red-glow 0.8s infinite ease-in-out;
+      border-color: #ef4444 !important;
+    }
+
+    /* Custom Leaflet Dark Mode styling */
+    .leaflet-layer,
+    .leaflet-control-zoom-in,
+    .leaflet-control-zoom-out,
+    .leaflet-control-attribution {
+      filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+    }
+    .leaflet-container {
+      background: #0b0f19 !important;
+    }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #111827;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #374151;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="w-screen h-screen bg-black text-slate-100 flex flex-col justify-between select-none">
+
+  <!-- TOP STATUS BAR: Automotive Info -->
+  <header class="h-12 bg-neutral-950 border-b border-neutral-800 px-4 flex items-center justify-between z-20 shrink-0">
+    <div class="flex items-center space-x-3">
+      <div class="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-neutral-900 border border-neutral-800">
+        <span id="power-indicator" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="power-text" class="text-xs font-bold tracking-wider text-neutral-300">12V CHARGING (AUTO ON)</span>
+      </div>
+      <div class="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded bg-neutral-900 border border-neutral-800">
+        <i data-lucide="bluetooth" class="w-3.5 h-3.5 text-cyan-400"></i>
+        <span class="text-xs font-semibold text-cyan-400">OBD-II ELM327: ACTIVE</span>
+      </div>
+    </div>
+
+    <!-- Active Vehicle Name & Clock -->
+    <div class="flex items-center space-x-4">
+      <div class="text-xs text-amber-400 font-bold bg-amber-950/40 px-3 py-1 rounded border border-amber-800/50">
+        <span id="vehicle-label">2018 HONDA ACCORD 2.0T</span>
+      </div>
+      <div id="live-clock" class="text-sm font-mono-stat font-bold text-neutral-400">10:45 AM</div>
+    </div>
+
+    <!-- Mode Select Tabs -->
+    <nav class="flex space-x-1 bg-neutral-900 p-1 rounded-lg border border-neutral-800">
+      <button onclick="switchTab('drive')" id="tab-drive" class="px-3 py-1 rounded text-xs font-bold bg-amber-500 text-black flex items-center space-x-1 transition">
+        <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
+        <span>DRIVE</span>
+      </button>
+      <button onclick="switchTab('dtc')" id="tab-dtc" class="px-3 py-1 rounded text-xs font-bold text-neutral-400 hover:text-white flex items-center space-x-1 transition">
+        <i data-lucide="alert-triangle" class="w-3.5 h-3.5"></i>
+        <span>DIAGNOSTICS</span>
+      </button>
+      <button onclick="switchTab('passport')" id="tab-passport" class="px-3 py-1 rounded text-xs font-bold text-neutral-400 hover:text-white flex items-center space-x-1 transition">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+        <span>PASSPORT</span>
+      </button>
+      <button onclick="switchTab('settings')" id="tab-settings" class="px-2.5 py-1 rounded text-xs text-neutral-400 hover:text-white transition">
+        <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+      </button>
+    </nav>
+  </header>
+
+  <!-- MAIN VIEWPORT CONTAINER -->
+  <main class="flex-1 relative overflow-hidden flex">
+
+    <!-- ================================================================= -->
+    <!-- VIEW 1: DRIVE DASHBOARD (SPLIT MAP + TELEMETRY RAIL)               -->
+    <!-- ================================================================= -->
+    <section id="view-drive" class="w-full h-full flex flex-col md:flex-row">
+      <!-- 60-65% Map Viewport with HUD Controls -->
+      <div class="relative flex-1 h-1/2 md:h-full bg-neutral-950 border-r border-neutral-800">
+        <div id="map-container" class="w-full h-full z-10"></div>
+
+        <!-- Floating Quick Action on Map -->
+        <div class="absolute top-4 left-4 z-20 flex space-x-2">
+          <button onclick="recenterMap()" class="px-3 py-2 bg-neutral-900/90 backdrop-blur border border-neutral-700 text-neutral-200 rounded-xl flex items-center space-x-2 text-xs font-bold shadow-lg hover:bg-neutral-800">
+            <i data-lucide="crosshair" class="w-4 h-4 text-cyan-400"></i>
+            <span>RECENTER GPS</span>
+          </button>
+          <button onclick="toggleDriveSim()" id="sim-btn" class="px-3 py-2 bg-neutral-900/90 backdrop-blur border border-amber-500/50 text-amber-400 rounded-xl flex items-center space-x-2 text-xs font-bold shadow-lg hover:bg-neutral-800">
+            <i data-lucide="play" class="w-4 h-4"></i>
+            <span id="sim-btn-text">SIMULATE COMMUTE</span>
+          </button>
+        </div>
+
+        <!-- Street & Speed Limit Overlay Banner -->
+        <div class="absolute bottom-4 left-4 right-4 z-20 bg-neutral-950/85 backdrop-blur-md border border-neutral-800 p-3 rounded-2xl flex items-center justify-between">
+          <div class="flex items-center space-x-3 truncate">
+            <div class="p-2.5 bg-neutral-900 rounded-xl border border-neutral-800 text-cyan-400">
+              <i data-lucide="navigation-2" class="w-5 h-5"></i>
+            </div>
+            <div class="truncate">
+              <div class="text-[11px] text-neutral-400 uppercase font-semibold">Current Heading</div>
+              <div id="road-name" class="text-sm font-bold text-white truncate">Main St Expressway & 5th Blvd</div>
+            </div>
+          </div>
+          <div class="flex items-center space-x-3 shrink-0">
+            <div class="text-right">
+              <div class="text-[10px] text-neutral-400 font-bold uppercase">Estimated Idle</div>
+              <div id="idle-stat" class="text-xs font-mono-stat text-amber-400 font-bold">00:03:42</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 35-40% Oversized Touch Telemetry Rail -->
+      <aside class="w-full md:w-[380px] lg:w-[440px] bg-neutral-950 flex flex-col justify-between p-4 space-y-3 z-10 shrink-0 border-t md:border-t-0 border-neutral-800 overflow-y-auto">
+
+        <!-- Speed & Limit Block with Instant Contrast Transition -->
+        <div id="speedometer-box" class="bg-neutral-900/90 rounded-2xl p-4 border border-neutral-800 transition-all duration-300">
+          <div class="flex items-center justify-between">
+            
+            <!-- Speed Limit Sign Badge -->
+            <div class="flex flex-col items-center">
+              <div class="w-14 h-14 rounded-full bg-white border-4 border-red-600 flex flex-col items-center justify-center shadow-lg">
+                <span id="speed-limit-val" class="text-2xl font-black text-black leading-none">60</span>
+              </div>
+              <span class="text-[10px] font-bold text-neutral-400 mt-1 uppercase tracking-wider">LIMIT</span>
+            </div>
+
+            <!-- Current Speed Value -->
+            <div class="flex flex-col items-end">
+              <div class="flex items-baseline space-x-1">
+                <span id="current-speed" class="text-6xl font-black font-mono-stat text-amber-400 tracking-tighter">54</span>
+                <span class="text-base font-bold text-neutral-400">KM/H</span>
+              </div>
+              <span id="speed-indicator-sub" class="text-xs font-semibold text-emerald-400">SPEED WITHIN LIMIT</span>
+            </div>
+          </div>
+
+          <!-- Overspeed Critical Alert Ribbon -->
+          <div id="overspeed-banner" class="hidden mt-3 p-2 bg-red-600 text-white font-black text-xs text-center tracking-wider rounded-lg uppercase flex items-center justify-center space-x-1.5">
+            <i data-lucide="volume-2" class="w-4 h-4 animate-bounce"></i>
+            <span>EXCEEDING LIMIT - REDUCE SPEED</span>
+          </div>
+
+          <!-- Speed slider for manual testing/simulation -->
+          <div class="mt-3 pt-2 border-t border-neutral-800/80 flex items-center space-x-2">
+            <span class="text-[10px] text-neutral-500 font-mono-stat">SIM:</span>
+            <input type="range" id="speed-slider" min="0" max="140" value="54" class="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-amber-500" oninput="manualSpeedChange(this.value)">
+          </div>
+        </div>
+
+        <!-- Trip Metrics Summary -->
+        <div class="grid grid-cols-3 gap-2">
+          <div class="bg-neutral-900/90 border border-neutral-800 p-2.5 rounded-xl text-center">
+            <div class="text-[10px] font-bold text-neutral-400 uppercase">Trip Dist</div>
+            <div id="trip-distance" class="text-base font-bold font-mono-stat text-white">24.2 <span class="text-[10px] text-neutral-400">km</span></div>
+          </div>
+          <div class="bg-neutral-900/90 border border-neutral-800 p-2.5 rounded-xl text-center">
+            <div class="text-[10px] font-bold text-neutral-400 uppercase">Avg Fuel</div>
+            <div id="avg-economy" class="text-base font-bold font-mono-stat text-cyan-400">7.4 <span class="text-[10px] text-neutral-400">L/100</span></div>
+          </div>
+          <div class="bg-neutral-900/90 border border-neutral-800 p-2.5 rounded-xl text-center">
+            <div class="text-[10px] font-bold text-neutral-400 uppercase">Moving</div>
+            <div id="moving-time" class="text-base font-bold font-mono-stat text-neutral-200">00:28</div>
+          </div>
+        </div>
+
+        <!-- Large Primary Touch Targets for Moving Vehicle (Min 64px) -->
+        <div class="flex flex-col space-y-2.5">
+          <button onclick="openFuelModal()" class="w-full h-16 bg-cyan-400 hover:bg-cyan-300 text-neutral-950 active:scale-[0.98] transition rounded-2xl flex items-center justify-center space-x-3 px-6 shadow-lg shadow-cyan-950/40">
+            <i data-lucide="fuel" class="w-7 h-7 stroke-[2.5]"></i>
+            <span class="text-lg font-black tracking-wide">LOG FUEL FILL</span>
+          </button>
+
+          <button onclick="switchTab('dtc')" class="w-full h-14 bg-neutral-900 hover:bg-neutral-850 active:scale-[0.98] border border-neutral-700 text-neutral-200 transition rounded-2xl flex items-center justify-center space-x-2 px-4">
+            <i data-lucide="cpu" class="w-5 h-5 text-amber-400"></i>
+            <span class="text-sm font-bold tracking-wider">SCAN VEHICLE SENSORS</span>
+          </button>
+        </div>
+
+      </aside>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- VIEW 2: AI DIAGNOSTICS & TELEMETRY (GEMINI ENGINE)               -->
+    <!-- ================================================================= -->
+    <section id="view-dtc" class="hidden w-full h-full overflow-y-auto p-4 md:p-6 bg-neutral-950 flex flex-col">
+      <div class="max-w-6xl w-full mx-auto space-y-6 pb-8">
+        
+        <!-- Header & Action Ribbon -->
+        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-neutral-800 pb-4">
+          <div>
+            <div class="flex items-center space-x-2">
+              <span class="px-2.5 py-0.5 rounded bg-red-950 text-red-400 border border-red-800 text-xs font-black">2 ACTIVE FAULTS</span>
+              <span class="text-xs text-neutral-400 font-mono-stat">ECU: BOSCH MED17.9</span>
+            </div>
+            <h1 class="text-2xl font-black text-white mt-1">Diagnostic Trouble Codes & Live Telemetry</h1>
+          </div>
+          
+          <div class="flex items-center space-x-2">
+            <button onclick="triggerGeminiAnalysis()" id="btn-gemini-scan" class="h-12 px-5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-neutral-950 font-black text-sm rounded-xl flex items-center space-x-2 shadow-lg shadow-cyan-950/50">
+              <i data-lucide="sparkles" class="w-5 h-5"></i>
+              <span>ASK GEMINI AI DIAGNOSTICIAN</span>
+            </button>
+            <button onclick="clearCodes()" class="h-12 px-4 bg-neutral-900 border border-neutral-700 text-neutral-300 hover:bg-neutral-800 rounded-xl text-xs font-bold">
+              CLEAR CODES
+            </button>
+          </div>
+        </div>
+
+        <!-- Grid: Left Sensor Metrics, Right AI Analysis Report -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          <!-- Sensor Freeze Frame Grid (5 Columns) -->
+          <div class="lg:col-span-5 space-y-4">
+            <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+              <h3 class="text-xs font-bold uppercase text-neutral-400 mb-3 flex items-center justify-between">
+                <span>Freeze-Frame Telemetry</span>
+                <span class="text-emerald-400 text-[10px] font-mono-stat font-normal">● LIVE 10Hz</span>
+              </h3>
+              
+              <div class="grid grid-cols-2 gap-3 text-sm">
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Engine RPM</div>
+                  <div id="stat-rpm" class="text-lg font-bold font-mono-stat text-amber-400">2,450 RPM</div>
+                </div>
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Coolant Temp</div>
+                  <div id="stat-coolant" class="text-lg font-bold font-mono-stat text-white">92°C</div>
+                </div>
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Mass Air Flow (MAF)</div>
+                  <div id="stat-maf" class="text-lg font-bold font-mono-stat text-white">18.4 g/s</div>
+                </div>
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Calculated Load</div>
+                  <div id="stat-load" class="text-lg font-bold font-mono-stat text-white">68%</div>
+                </div>
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Short Term Trim (STFT)</div>
+                  <div id="stat-stft" class="text-lg font-bold font-mono-stat text-red-400">+14.2%</div>
+                </div>
+                <div class="p-3 bg-neutral-950 rounded-xl border border-neutral-850">
+                  <div class="text-[10px] text-neutral-500 font-mono-stat uppercase">Long Term Trim (LTFT)</div>
+                  <div id="stat-ltft" class="text-lg font-bold font-mono-stat text-red-400">+18.8%</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Stored DTC List -->
+            <div class="space-y-2">
+              <div class="bg-neutral-900 border border-neutral-800 p-4 rounded-2xl flex items-start justify-between">
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-lg font-black font-mono-stat text-red-400">P0171</span>
+                    <span class="text-xs bg-red-950/70 text-red-300 px-2 py-0.5 rounded border border-red-800/60 font-bold">CONFIRMED</span>
+                  </div>
+                  <div class="text-sm font-semibold text-neutral-200 mt-1">System Too Lean (Bank 1)</div>
+                  <p class="text-xs text-neutral-400 mt-0.5">Air/Fuel ratio exceeds stoichiometric tolerance under load.</p>
+                </div>
+                <i data-lucide="wrench" class="w-5 h-5 text-neutral-500"></i>
+              </div>
+
+              <div class="bg-neutral-900 border border-neutral-800 p-4 rounded-2xl flex items-start justify-between">
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-lg font-black font-mono-stat text-amber-400">P0300</span>
+                    <span class="text-xs bg-amber-950/70 text-amber-300 px-2 py-0.5 rounded border border-amber-800/60 font-bold">PENDING</span>
+                  </div>
+                  <div class="text-sm font-semibold text-neutral-200 mt-1">Random / Multiple Cylinder Misfire</div>
+                  <p class="text-xs text-neutral-400 mt-0.5">Detected erratic crankshaft velocity change across cylinders.</p>
+                </div>
+                <i data-lucide="alert-circle" class="w-5 h-5 text-neutral-500"></i>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Mechanical Guidance Report (7 Columns) -->
+          <div class="lg:col-span-7 bg-neutral-900 border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between">
+            <div>
+              <div class="flex items-center justify-between pb-3 border-b border-neutral-800">
+                <div class="flex items-center space-x-2.5">
+                  <div class="p-2 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-400">
+                    <i data-lucide="bot" class="w-5 h-5"></i>
+                  </div>
+                  <div>
+                    <h2 class="text-sm font-black text-white">Gemini 2.5 Multi-Sensor Reasoning</h2>
+                    <div class="text-[11px] text-cyan-400 font-mono-stat">Cross-referenced against OEM Factory Service Manual</div>
+                  </div>
+                </div>
+                <span id="gemini-badge" class="text-[10px] font-bold bg-neutral-800 px-2 py-1 rounded text-neutral-400 uppercase">STANDBY</span>
+              </div>
+
+              <!-- Output Box -->
+              <div id="ai-response-container" class="mt-4 text-neutral-300 text-sm leading-relaxed space-y-3">
+                <div class="p-4 bg-neutral-950 rounded-xl border border-neutral-850 text-neutral-400">
+                  <p class="text-xs">Tap <strong class="text-cyan-400">"ASK GEMINI AI DIAGNOSTICIAN"</strong> to stream your live freeze-frame data (RPM, MAF, LTFT +18.8%) and fault codes to Gemini for correlated mechanical triage.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pre-emptive Maintenance & Wear Note -->
+            <div class="mt-6 pt-4 border-t border-neutral-800/80 text-xs text-neutral-400 flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <i data-lucide="disc" class="w-4 h-4 text-amber-400"></i>
+                <span>Adaptive Brake Wear Index: <strong class="text-neutral-200 font-mono-stat">68% Remaining</strong></span>
+              </div>
+              <span class="text-neutral-500 font-mono-stat">Driven: 8,420 km on pads</span>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- VIEW 3: CROWDSOURCED FLEET & RESALE PASSPORT                      -->
+    <!-- ================================================================= -->
+    <section id="view-passport" class="hidden w-full h-full overflow-y-auto p-4 md:p-6 bg-neutral-950 flex flex-col">
+      <div class="max-w-6xl w-full mx-auto space-y-6 pb-8">
+        
+        <!-- Passport Intro & Verified Badge -->
+        <div class="bg-gradient-to-br from-neutral-900 via-neutral-900 to-neutral-950 border border-neutral-800 rounded-2xl p-6 relative overflow-hidden">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+            <div>
+              <div class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs font-bold mb-2">
+                <i data-lucide="badge-check" class="w-4 h-4"></i>
+                <span>CRYPTOGRAPHICALLY VERIFIED DIGITAL PASSPORT</span>
+              </div>
+              <h2 class="text-2xl font-black text-white">Vehicle Health & Market Valuation</h2>
+              <p class="text-xs text-neutral-400 max-w-xl mt-1">Based on continuous sensor telemetry, verified odometer sync, and community failure rate curves across 1,420 identical vehicles.</p>
+            </div>
+            
+            <div class="text-right shrink-0">
+              <div class="text-xs font-bold text-neutral-400 uppercase">Algorithmic Resale Value</div>
+              <div class="text-3xl font-black font-mono-stat text-emerald-400">$18,450 <span class="text-xs text-neutral-400 font-normal">USD</span></div>
+              <div class="text-[11px] text-emerald-300 mt-0.5">+$950 above regional average (Pristine Engine Score)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          <!-- Fleet Crowdsourced Known Issues -->
+          <div class="lg:col-span-2 bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-4">
+            <h3 class="text-sm font-black text-white flex items-center justify-between">
+              <span class="flex items-center space-x-2">
+                <i data-lucide="users" class="w-4 h-4 text-cyan-400"></i>
+                <span>Crowdsourced Fleet Known Issues (Honda 2.0T Fleet)</span>
+              </span>
+              <span class="text-xs font-mono-stat text-cyan-400">1,420 Vehicles Monitored</span>
+            </h3>
+
+            <div class="space-y-3">
+              <!-- Known Issue 1 -->
+              <div class="p-3.5 bg-neutral-950 rounded-xl border border-neutral-850">
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="text-xs font-bold text-white">Intake Valve Carbon Build-up (GDI)</span>
+                  <span class="text-xs font-black font-mono-stat text-amber-400">76% of fleet at >100k km</span>
+                </div>
+                <div class="w-full bg-neutral-800 rounded-full h-2 overflow-hidden mb-2">
+                  <div class="bg-amber-400 h-2 rounded-full" style="width: 76%"></div>
+                </div>
+                <p class="text-[11px] text-neutral-400">Your vehicle is currently at 84,200 km. Recommend walnut shell blasting inspection in ~15,000 km.</p>
+              </div>
+
+              <!-- Known Issue 2 -->
+              <div class="p-3.5 bg-neutral-950 rounded-xl border border-neutral-850">
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="text-xs font-bold text-white">A/C Condenser Seal Leakage</span>
+                  <span class="text-xs font-black font-mono-stat text-red-400">42% reported failure</span>
+                </div>
+                <div class="w-full bg-neutral-800 rounded-full h-2 overflow-hidden mb-2">
+                  <div class="bg-red-400 h-2 rounded-full" style="width: 42%"></div>
+                </div>
+                <p class="text-[11px] text-neutral-400">Extended manufacturer bulletin active. Inspect lower condenser seams during upcoming coolant flush.</p>
+              </div>
+
+              <!-- Known Issue 3 -->
+              <div class="p-3.5 bg-neutral-950 rounded-xl border border-neutral-850">
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="text-xs font-bold text-white">Intercooler Moisture Accumulation</span>
+                  <span class="text-xs font-black font-mono-stat text-emerald-400">12% low risk</span>
+                </div>
+                <div class="w-full bg-neutral-800 rounded-full h-2 overflow-hidden mb-2">
+                  <div class="bg-emerald-400 h-2 rounded-full" style="width: 12%"></div>
+                </div>
+                <p class="text-[11px] text-neutral-400">Observed primarily in humid climates with frequent short drives.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Public Shareable Passport Card & QR Code -->
+          <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 flex flex-col justify-between items-center text-center space-y-4">
+            <div class="w-full">
+              <h3 class="text-sm font-black text-white text-left mb-1">Instant Buyer Verification</h3>
+              <p class="text-xs text-neutral-400 text-left">Generate an immutable link for potential buyers to verify service records and live OBD scans.</p>
+            </div>
+
+            <!-- Simulated QR Code -->
+            <div class="w-40 h-40 bg-white p-3 rounded-2xl flex flex-col items-center justify-center shadow-lg border-2 border-neutral-200">
+              <div class="w-full h-full bg-neutral-950 rounded-lg p-2 flex flex-col items-center justify-center">
+                <i data-lucide="qr-code" class="w-24 h-24 text-white stroke-[1.5]"></i>
+              </div>
+            </div>
+            
+            <div class="w-full space-y-2">
+              <div class="text-xs font-mono-stat text-cyan-400 font-bold">PASSPORT-ID: #HA-842-VERIFIED</div>
+              <button onclick="copyPassportLink()" class="w-full h-11 bg-neutral-800 hover:bg-neutral-750 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition border border-neutral-700">
+                <i data-lucide="share-2" class="w-4 h-4"></i>
+                <span id="copy-btn-text">COPY PUBLIC LISTING URL</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- VIEW 4: SYSTEM SETTINGS & POWER SIMULATOR                         -->
+    <!-- ================================================================= -->
+    <section id="view-settings" class="hidden w-full h-full overflow-y-auto p-4 md:p-6 bg-neutral-950 flex flex-col">
+      <div class="max-w-3xl w-full mx-auto space-y-6 pb-8">
+        <div>
+          <h2 class="text-2xl font-black text-white">Car OS Preferences & Hardware Hooks</h2>
+          <p class="text-xs text-neutral-400 mt-1">Configure automated wake/sleep ignition triggers and speed threshold warnings.</p>
+        </div>
+
+        <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-5">
+          <h3 class="text-sm font-bold uppercase text-neutral-400">Power & Ignition Simulation</h3>
+          
+          <div class="flex items-center justify-between p-3.5 bg-neutral-950 rounded-xl border border-neutral-800">
+            <div>
+              <div class="text-sm font-bold text-white">12V Ignition Power Trigger</div>
+              <div class="text-xs text-neutral-400">Simulate turning the car key ON/OFF to test auto-wake & graceful sleep.</div>
+            </div>
+            <button onclick="toggleIgnitionPower()" id="power-toggle-btn" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-neutral-950 font-black text-xs rounded-xl">
+              DISCONNECT POWER
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between p-3.5 bg-neutral-950 rounded-xl border border-neutral-800">
+            <div>
+              <div class="text-sm font-bold text-white">Speed Limit Safety Margin</div>
+              <div class="text-xs text-neutral-400">Trigger critical alert chime when exceeding posted limit by:</div>
+            </div>
+            <select id="overspeed-margin-select" class="bg-neutral-900 border border-neutral-700 text-white text-xs rounded-xl px-3 py-2 font-bold font-mono-stat" onchange="updateOverspeedMargin(this.value)">
+              <option value="0">+0 km/h (Strict)</option>
+              <option value="5" selected>+5 km/h (Standard)</option>
+              <option value="10">+10 km/h (Highway)</option>
+            </select>
+          </div>
+
+          <div class="flex items-center justify-between p-3.5 bg-neutral-950 rounded-xl border border-neutral-800">
+            <div>
+              <div class="text-sm font-bold text-white">Auditory Overspeed Chime</div>
+              <div class="text-xs text-neutral-400">Play web audio tone when entering overspeed alert state.</div>
+            </div>
+            <input type="checkbox" id="audio-chime-toggle" checked class="w-5 h-5 accent-cyan-400 rounded">
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ================================================================= -->
+  <!-- MODAL: ONE-HANDED OVERSIZED FUEL LOG PUMP STOP                     -->
+  <!-- ================================================================= -->
+  <div id="modal-fuel" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 hidden">
+    <div class="bg-neutral-900 border border-neutral-800 w-full max-w-lg rounded-3xl p-6 space-y-5 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <div>
+          <span class="text-xs font-bold text-cyan-400 uppercase tracking-wider font-mono-stat">Pump Stop Record</span>
+          <h3 class="text-xl font-black text-white">Enter Fuel Filled</h3>
+        </div>
+        <button onclick="closeFuelModal()" class="w-10 h-10 rounded-xl bg-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Quick Volume Preset Pills -->
+      <div class="grid grid-cols-4 gap-2">
+        <button onclick="addFuelPreset(5)" class="h-12 bg-neutral-800 hover:bg-neutral-700 active:bg-cyan-500 active:text-black rounded-xl text-sm font-black text-white transition">+5 L</button>
+        <button onclick="addFuelPreset(10)" class="h-12 bg-neutral-800 hover:bg-neutral-700 active:bg-cyan-500 active:text-black rounded-xl text-sm font-black text-white transition">+10 L</button>
+        <button onclick="addFuelPreset(20)" class="h-12 bg-neutral-800 hover:bg-neutral-700 active:bg-cyan-500 active:text-black rounded-xl text-sm font-black text-white transition">+20 L</button>
+        <button onclick="setFullTank()" class="h-12 bg-cyan-950 border border-cyan-700 hover:bg-cyan-900 active:bg-cyan-500 rounded-xl text-xs font-black text-cyan-300 transition">FULL</button>
+      </div>
+
+      <!-- Number Input Readout Display -->
+      <div class="bg-neutral-950 border border-neutral-800 rounded-2xl p-4 flex items-center justify-between">
+        <span class="text-xs font-bold text-neutral-500 uppercase">Gallons / Liters</span>
+        <div class="flex items-baseline space-x-1">
+          <span id="fuel-input-display" class="text-4xl font-black font-mono-stat text-cyan-400">0.0</span>
+          <span class="text-sm font-bold text-neutral-400">L</span>
+        </div>
+      </div>
+
+      <!-- Oversized Numeric Keypad for Shaky In-Car Fingers -->
+      <div class="grid grid-cols-3 gap-2">
+        <button onclick="numpadPress('1')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">1</button>
+        <button onclick="numpadPress('2')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">2</button>
+        <button onclick="numpadPress('3')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">3</button>
+        <button onclick="numpadPress('4')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">4</button>
+        <button onclick="numpadPress('5')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">5</button>
+        <button onclick="numpadPress('6')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">6</button>
+        <button onclick="numpadPress('7')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">7</button>
+        <button onclick="numpadPress('8')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">8</button>
+        <button onclick="numpadPress('9')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">9</button>
+        <button onclick="numpadPress('.')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">.</button>
+        <button onclick="numpadPress('0')" class="h-14 bg-neutral-800 hover:bg-neutral-750 text-white font-mono-stat text-xl font-bold rounded-xl active:scale-95 transition">0</button>
+        <button onclick="numpadClear()" class="h-14 bg-red-950/70 border border-red-800/80 text-red-300 font-mono-stat text-sm font-bold rounded-xl active:scale-95 transition">CLR</button>
+      </div>
+
+      <!-- Action Confirmation Button -->
+      <button onclick="commitFuelFill()" class="w-full h-14 bg-cyan-400 hover:bg-cyan-300 active:scale-98 text-neutral-950 font-black text-base rounded-2xl flex items-center justify-center space-x-2 transition shadow-lg shadow-cyan-950/50">
+        <i data-lucide="check" class="w-5 h-5 stroke-[3]"></i>
+        <span>SAVE FILL & RECALCULATE CONSUMPTION</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- IN-APP NOTICE / TOAST POPUP -->
+  <div id="toast-banner" class="fixed bottom-6 right-6 z-50 transform translate-y-24 opacity-0 transition-all duration-300 max-w-sm p-4 bg-neutral-900 border border-neutral-700 text-white rounded-2xl shadow-2xl flex items-center space-x-3 pointer-events-none">
+    <div id="toast-icon-container" class="p-2 rounded-xl bg-cyan-950 text-cyan-400 shrink-0">
+      <i data-lucide="info" class="w-5 h-5"></i>
+    </div>
+    <div class="text-xs font-semibold" id="toast-text">Notification message</div>
+  </div>
+
+  <!-- ================================================================= -->
+  <!-- APPLICATION SCRIPTS & STATE MACHINE                               -->
+  <!-- ================================================================= -->
+  <script>
+    // Initialize icons
+    lucide.createIcons();
+
+    // -------------------------------------------------------------
+    // Global State
+    // -------------------------------------------------------------
+    const apiKey = ""; // Runtime provides Gemini Key
+    let currentSpeed = 54;
+    let speedLimit = 60;
+    let overspeedMargin = 5;
+    let isOverspeed = false;
+    let isIgnitionOn = true;
+    let isSimulatingDrive = false;
+    let simInterval = null;
+
+    let tripDistanceKm = 24.2;
+    let totalLitersConsumed = 1.79;
+    let movingSeconds = 1690;
+    let idleSeconds = 222;
+
+    let currentFuelInput = "0.0";
+    let map = null;
+    let marker = null;
+    let audioContext = null;
+
+    // Simulated Route Points (Downtown Amman to Ring Expressway)
+    const routeCoords = [
+      [31.9539, 35.9106],
+      [31.9550, 35.9120],
+      [31.9568, 35.9142],
+      [31.9590, 35.9175],
+      [31.9615, 35.9210],
+      [31.9640, 35.9248],
+      [31.9675, 35.9280],
+      [31.9710, 35.9325]
+    ];
+    let routeIdx = 0;
+
+    // -------------------------------------------------------------
+    // Initialization
+    // -------------------------------------------------------------
+    window.addEventListener('DOMContentLoaded', () => {
+      initMap();
+      startClocks();
+      evaluateSpeedCondition();
+    });
+
+    function initMap() {
+      try {
+        map = L.map('map-container', {
+          zoomControl: false,
+          attributionControl: false
+        }).setView(routeCoords[0], 15);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19
+        }).addTo(map);
+
+        // Custom pulsing car indicator marker
+        const carIcon = L.divIcon({
+          className: 'custom-car-pin',
+          html: `<div style="width:20px;height:20px;background:#38bdf8;border:3px solid #ffffff;border-radius:50%;box-shadow:0 0 15px #38bdf8;"></div>`,
+          iconSize: [20, 20],
+          iconAnchor: [10, 10]
+        });
+
+        marker = L.marker(routeCoords[0], { icon: carIcon }).addTo(map);
+
+        // Draw intended route line
+        const polyline = L.polyline(routeCoords, {
+          color: '#38bdf8',
+          weight: 4,
+          opacity: 0.75,
+          dashArray: '8, 8'
+        }).addTo(map);
+      } catch (err) {
+        console.warn("Leaflet map initialization skipped or failed:", err);
+      }
+    }
+
+    function recenterMap() {
+      if (map && marker) {
+        map.setView(marker.getLatLng(), 16);
+        showToast("GPS position recalibrated and centered", "crosshair");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Dynamic Speed & Alert Rules
+    // -------------------------------------------------------------
+    function evaluateSpeedCondition() {
+      const allowedSpeed = speedLimit + overspeedMargin;
+      const speedBox = document.getElementById('speedometer-box');
+      const speedValEl = document.getElementById('current-speed');
+      const banner = document.getElementById('overspeed-banner');
+      const sub = document.getElementById('speed-indicator-sub');
+
+      speedValEl.textContent = Math.round(currentSpeed);
+
+      if (currentSpeed > allowedSpeed) {
+        if (!isOverspeed) {
+          isOverspeed = true;
+          triggerSpeedChime();
+        }
+        speedBox.classList.add('overspeed-active');
+        speedBox.classList.remove('border-neutral-800');
+        speedValEl.classList.remove('text-amber-400');
+        speedValEl.classList.add('text-red-500');
+        banner.classList.remove('hidden');
+        sub.textContent = `+${Math.round(currentSpeed - speedLimit)} KM/H OVER LIMIT`;
+        sub.className = "text-xs font-black text-red-400";
+      } else {
+        isOverspeed = false;
+        speedBox.classList.remove('overspeed-active');
+        speedBox.classList.add('border-neutral-800');
+        speedValEl.classList.remove('text-red-500');
+        speedValEl.classList.add('text-amber-400');
+        banner.classList.add('hidden');
+        sub.textContent = "SPEED WITHIN LIMIT";
+        sub.className = "text-xs font-semibold text-emerald-400";
+      }
+    }
+
+    function manualSpeedChange(val) {
+      currentSpeed = parseFloat(val);
+      evaluateSpeedCondition();
+    }
+
+    function triggerSpeedChime() {
+      const toggle = document.getElementById('audio-chime-toggle');
+      if (!toggle || !toggle.checked) return;
+
+      try {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioContext.state === 'suspended') {
+          audioContext.resume();
+        }
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, audioContext.currentTime); // High pitch warning
+        osc.frequency.exponentialRampToValueAtTime(440, audioContext.currentTime + 0.35);
+        gain.gain.setValueAtTime(0.15, audioContext.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.35);
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+        osc.start();
+        osc.stop(audioContext.currentTime + 0.4);
+      } catch (e) {
+        // Audio API may need direct interaction first
+      }
+    }
+
+    function updateOverspeedMargin(val) {
+      overspeedMargin = parseInt(val, 10);
+      evaluateSpeedCondition();
+      showToast(`Overspeed alert margin set to +${overspeedMargin} km/h`, "sliders");
+    }
+
+    // -------------------------------------------------------------
+    // Driving Commute Simulator (Moving vs Stopped Timer)
+    // -------------------------------------------------------------
+    function toggleDriveSim() {
+      isSimulatingDrive = !isSimulatingDrive;
+      const btn = document.getElementById('sim-btn');
+      const btnText = document.getElementById('sim-btn-text');
+
+      if (isSimulatingDrive) {
+        btnText.textContent = "PAUSE COMMUTE";
+        btn.classList.add('border-cyan-400', 'text-cyan-400');
+        simInterval = setInterval(driveSimulationTick, 1000);
+        showToast("Drive tracking started - logging trip timeline", "play");
+      } else {
+        btnText.textContent = "SIMULATE COMMUTE";
+        btn.classList.remove('border-cyan-400', 'text-cyan-400');
+        clearInterval(simInterval);
+        showToast("Trip recording paused", "pause");
+      }
+      lucide.createIcons();
+    }
+
+    function driveSimulationTick() {
+      // Advance coordinates along simulated path
+      routeIdx = (routeIdx + 1) % routeCoords.length;
+      const nextPos = routeCoords[routeIdx];
+      if (marker && map) {
+        marker.setLatLng(nextPos);
+        map.panTo(nextPos);
+      }
+
+      // Vary speed randomly around limit
+      if (routeIdx % 3 === 0) {
+        currentSpeed = Math.max(0, currentSpeed + (Math.random() * 14 - 6));
+      }
+
+      // Increment stats
+      if (currentSpeed > 3) {
+        movingSeconds += 1;
+        tripDistanceKm += (currentSpeed / 3600);
+        totalLitersConsumed += (currentSpeed * 0.075 / 3600);
+      } else {
+        idleSeconds += 1;
+        totalLitersConsumed += (0.8 / 3600); // 0.8L/hr idle consumption
+      }
+
+      // Update UI elements
+      document.getElementById('speed-slider').value = Math.round(currentSpeed);
+      evaluateSpeedCondition();
+
+      document.getElementById('trip-distance').innerHTML = `${tripDistanceKm.toFixed(1)} <span class="text-[10px] text-neutral-400">km</span>`;
+      const avgL100 = tripDistanceKm > 0 ? ((totalLitersConsumed / tripDistanceKm) * 100).toFixed(1) : "0.0";
+      document.getElementById('avg-economy').innerHTML = `${avgL100} <span class="text-[10px] text-neutral-400">L/100</span>`;
+
+      const mMinutes = Math.floor(movingSeconds / 60);
+      const mSecs = (movingSeconds % 60).toString().padStart(2, '0');
+      document.getElementById('moving-time').textContent = `${mMinutes}:${mSecs}`;
+
+      const iMinutes = Math.floor(idleSeconds / 60).toString().padStart(2, '0');
+      const iSecs = (idleSeconds % 60).toString().padStart(2, '0');
+      document.getElementById('idle-stat').textContent = `00:${iMinutes}:${iSecs}`;
+    }
+
+    // -------------------------------------------------------------
+    // Ignition & Power Management Simulator
+    // -------------------------------------------------------------
+    function toggleIgnitionPower() {
+      isIgnitionOn = !isIgnitionOn;
+      const pIndicator = document.getElementById('power-indicator');
+      const pText = document.getElementById('power-text');
+      const pBtn = document.getElementById('power-toggle-btn');
+
+      if (isIgnitionOn) {
+        pIndicator.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse";
+        pText.textContent = "12V CHARGING (AUTO ON)";
+        pBtn.textContent = "DISCONNECT POWER";
+        pBtn.className = "px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-neutral-950 font-black text-xs rounded-xl";
+        showToast("12V Power restored: Screen wake lock acquired, GPS active", "zap");
+      } else {
+        pIndicator.className = "w-2.5 h-2.5 rounded-full bg-amber-500";
+        pText.textContent = "IGNITION OFF (STANDBY IN 30s)";
+        pBtn.textContent = "RESTORE 12V POWER";
+        pBtn.className = "px-4 py-2 bg-amber-600 hover:bg-amber-500 text-neutral-950 font-black text-xs rounded-xl";
+        showToast("Power lost: Committing trip log to SQLite & entering low-power standby", "moon");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Navigation / Tab Switcher
+    // -------------------------------------------------------------
+    function switchTab(tab) {
+      const views = ['drive', 'dtc', 'passport', 'settings'];
+      views.forEach(v => {
+        const el = document.getElementById(`view-${v}`);
+        const btn = document.getElementById(`tab-${v}`);
+        if (el) el.classList.add('hidden');
+        if (btn) {
+          btn.classList.remove('bg-amber-500', 'text-black');
+          btn.classList.add('text-neutral-400');
+        }
+      });
+
+      const activeView = document.getElementById(`view-${tab}`);
+      const activeBtn = document.getElementById(`tab-${tab}`);
+      if (activeView) activeView.classList.remove('hidden');
+      if (activeBtn) {
+        activeBtn.classList.add('bg-amber-500', 'text-black');
+        activeBtn.classList.remove('text-neutral-400');
+      }
+
+      if (tab === 'drive' && map) {
+        setTimeout(() => map.invalidateSize(), 200);
+      }
+      lucide.createIcons();
+    }
+
+    // -------------------------------------------------------------
+    // Fuel Logging Modal
+    // -------------------------------------------------------------
+    function openFuelModal() {
+      currentFuelInput = "0.0";
+      document.getElementById('fuel-input-display').textContent = currentFuelInput;
+      document.getElementById('modal-fuel').classList.remove('hidden');
+    }
+
+    function closeFuelModal() {
+      document.getElementById('modal-fuel').classList.add('hidden');
+    }
+
+    function numpadPress(char) {
+      if (currentFuelInput === "0.0" || currentFuelInput === "0") {
+        currentFuelInput = char === "." ? "0." : char;
+      } else {
+        if (char === "." && currentFuelInput.includes(".")) return;
+        if (currentFuelInput.length < 5) currentFuelInput += char;
+      }
+      document.getElementById('fuel-input-display').textContent = currentFuelInput;
+    }
+
+    function numpadClear() {
+      currentFuelInput = "0.0";
+      document.getElementById('fuel-input-display').textContent = currentFuelInput;
+    }
+
+    function addFuelPreset(liters) {
+      const existing = parseFloat(currentFuelInput) || 0;
+      currentFuelInput = (existing + liters).toFixed(1);
+      document.getElementById('fuel-input-display').textContent = currentFuelInput;
+    }
+
+    function setFullTank() {
+      currentFuelInput = "56.0"; // Capacity for Accord
+      document.getElementById('fuel-input-display').textContent = currentFuelInput;
+    }
+
+    function commitFuelFill() {
+      const vol = parseFloat(currentFuelInput);
+      if (vol > 0) {
+        showToast(`Logged fill: ${vol.toFixed(1)}L added to timeline`, "fuel");
+        closeFuelModal();
+      } else {
+        showToast("Please enter a valid fuel volume", "alert-circle");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // Gemini 2.5 Multi-Sensor Diagnostic Engine (With Retry Backoff)
+    // -------------------------------------------------------------
+    async function triggerGeminiAnalysis() {
+      const btn = document.getElementById('btn-gemini-scan');
+      const badge = document.getElementById('gemini-badge');
+      const container = document.getElementById('ai-response-container');
+
+      btn.disabled = true;
+      btn.classList.add('opacity-50', 'cursor-not-allowed');
+      badge.textContent = "REASONING...";
+      badge.className = "text-[10px] font-bold bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-1 rounded animate-pulse";
+
+      container.innerHTML = `
+        <div class="p-4 bg-neutral-950 rounded-xl border border-neutral-800 flex items-center space-x-3">
+          <div class="w-5 h-5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin"></div>
+          <span class="text-xs text-neutral-300 font-mono-stat">Sending live freeze-frame telemetry & DTC P0171 to Gemini 2.5 Flash...</span>
+        </div>
+      `;
+
+      const promptPayload = {
+        vehicle: "2018 Honda Accord 2.0T (K20C4 Engine, 84,200 km)",
+        faultCodes: ["P0171 (System Too Lean Bank 1)", "P0300 (Random Misfire Pending)"],
+        freezeFrame: {
+          engineRpm: 2450,
+          coolantTempC: 92,
+          calculatedLoadPercent: 68,
+          mafRateGramsPerSec: 18.4,
+          shortTermFuelTrim: "+14.2%",
+          longTermFuelTrim: "+18.8%",
+          manifoldAbsolutePressureKpa: 112
+        },
+        instruction: "Correlate these live OBD-II sensor values with the vehicle make. Explain the root cause of positive fuel trim exceeding +18%, prioritize inspection steps, and rate driving risk (Low/Medium/High)."
+      };
+
+      const systemPrompt = "You are a master automotive master technician & diagnostic engineer. Provide crisp, high-value, step-by-step diagnostic triage. Use bullet points and bolding for clarity. Max 180 words.";
+
+      try {
+        const responseText = await callGeminiWithBackoff(promptPayload, systemPrompt);
+        badge.textContent = "AI VERIFIED";
+        badge.className = "text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-1 rounded";
+        
+        container.innerHTML = `
+          <div class="p-4 bg-neutral-950 rounded-xl border border-neutral-800 space-y-2.5">
+            <div class="text-xs font-mono-stat text-cyan-400 font-bold uppercase">Root Cause Correlation:</div>
+            <div class="text-xs text-neutral-200 leading-relaxed">${formatMarkdown(responseText)}</div>
+            <div class="pt-2 border-t border-neutral-850 flex items-center justify-between text-[11px] text-neutral-400">
+              <span>Risk Level: <strong class="text-amber-400">MODERATE (Avoid High Boost)</strong></span>
+              <span>Est. Repair Time: <strong>30-45 mins</strong></span>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        // High-fidelity fallback diagnosis if offline or key absent
+        badge.textContent = "OFFLINE TRIAGE";
+        badge.className = "text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 px-2 py-1 rounded";
+
+        container.innerHTML = `
+          <div class="p-4 bg-neutral-950 rounded-xl border border-neutral-800 space-y-2.5">
+            <div class="text-xs font-mono-stat text-amber-400 font-bold uppercase">Correlated Diagnostic Assessment:</div>
+            <div class="text-xs text-neutral-200 leading-relaxed">
+              <p>• <strong>Positive Trims (+18.8% LTFT):</strong> Indicates the ECU is dumping excess fuel to counteract unmetered incoming air.</p>
+              <p>• <strong>Prime Suspect:</strong> Post-MAF intake boot split, PCV valve diaphragm tear, or dirty hot-wire MAF sensor (reading only 18.4 g/s at 2,450 RPM under 68% load).</p>
+              <p>• <strong>Recommended Action:</strong> Perform smoke test on turbo inlet tract. Clean MAF with dedicated solvent before replacing O2 sensors.</p>
+            </div>
+            <div class="pt-2 border-t border-neutral-850 flex items-center justify-between text-[11px] text-neutral-400">
+              <span>Risk: <strong class="text-amber-400">MODERATE</strong></span>
+              <span>Next Check: Intake Charge Pipes</span>
+            </div>
+          </div>
+        `;
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    }
+
+    async function callGeminiWithBackoff(promptData, systemPrompt) {
+      const delays = [1000, 2000, 4000, 8000, 16000];
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+      const payload = {
+        contents: [{
+          parts: [{ text: JSON.stringify(promptData) }]
+        }],
+        systemInstruction: {
+          parts: [{ text: systemPrompt }]
+        }
+      };
+
+      for (let attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            return data.candidates?.[0]?.content?.parts?.[0]?.text || "Diagnostic summary generated.";
+          }
+          if (res.status !== 429 && res.status < 500) {
+            throw new Error(`Client error: ${res.status}`);
+          }
+        } catch (err) {
+          if (attempt === delays.length) throw err;
+          await new Promise(r => setTimeout(r, delays[attempt]));
+        }
+      }
+      throw new Error("Diagnostic service unavailable.");
+    }
+
+    function formatMarkdown(txt) {
+      return txt
+        .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+    }
+
+    function clearCodes() {
+      showToast("Sent OBD-II Mode 04: Diagnostic codes cleared from ECU memory", "check-circle");
+    }
+
+    function copyPassportLink() {
+      const btnText = document.getElementById('copy-btn-text');
+      const dummyUrl = `https://car-os.network/passport/HA-842-HONDA-ACCORD`;
+      
+      const el = document.createElement('textarea');
+      el.value = dummyUrl;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+
+      btnText.textContent = "COPIED TO CLIPBOARD!";
+      setTimeout(() => btnText.textContent = "COPY PUBLIC LISTING URL", 2500);
+      showToast("Verified vehicle passport URL copied to clipboard", "share-2");
+    }
+
+    // -------------------------------------------------------------
+    // Clock & Notification Helpers
+    // -------------------------------------------------------------
+    function startClocks() {
+      setInterval(() => {
+        const d = new Date();
+        document.getElementById('live-clock').textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }, 1000);
+    }
+
+    function showToast(msg, iconName = "info") {
+      const toast = document.getElementById('toast-banner');
+      const text = document.getElementById('toast-text');
+      const iconContainer = document.getElementById('toast-icon-container');
+
+      text.textContent = msg;
+      iconContainer.innerHTML = `<i data-lucide="${iconName}" class="w-5 h-5"></i>`;
+      lucide.createIcons();
+
+      toast.classList.remove('translate-y-24', 'opacity-0');
+      setTimeout(() => {
+        toast.classList.add('translate-y-24', 'opacity-0');
+      }, 3500);
+    }
+  </script>
+</body>
+</html>
